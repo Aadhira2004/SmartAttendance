@@ -9,3 +9,4 @@ opencv-contrib-python==5.0.0.93
 python-dotenv==1.2.4
 Werkzeug==3.1.9
 gunicorn
+streamlit
