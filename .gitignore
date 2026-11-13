@@ -1,0 +1,9 @@
+venv/
+.env
+__pycache__/
+*.pyc
+.git/
+attendance.db
+attendance.csv
+dataset/
+.DS_Store
