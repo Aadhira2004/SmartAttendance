@@ -1,233 +1,80 @@
-
-
 import cv2
-import os
 import numpy as np
+from pathlib import Path
+import os
 
-# ==========================================
-# 1. PROJECT PATHS
-# ==========================================
+BASE = Path(__file__).resolve().parent
+DATASET = BASE / "dataset"
+MODEL_DIR = BASE / "models"
+MODEL_DIR.mkdir(exist_ok=True)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CASCADE = MODEL_DIR / "haarcascade_frontalface_default.xml"
+MODEL = MODEL_DIR / "trainer.yml"
+LABELS = MODEL_DIR / "labels.npy"
 
-DATASET_DIR = os.path.join(BASE_DIR, "dataset")
-MODEL_DIR = os.path.join(BASE_DIR, "models")
+if not CASCADE.exists():
+    raise SystemExit("ERROR: Haar cascade missing. Download it first.")
 
-CASCADE_PATH = os.path.join(
-    MODEL_DIR,
-    "haarcascade_frontalface_default.xml"
-)
-
-TRAINED_MODEL_PATH = os.path.join(
-    MODEL_DIR,
-    "trainer.yml"
-)
-
-LABELS_PATH = os.path.join(
-    MODEL_DIR,
-    "labels.npy"
-)
-
-# Create models folder if it doesn't exist
-os.makedirs(MODEL_DIR, exist_ok=True)
-
-
-# ==========================================
-# 2. LOAD HAAR CASCADE
-# ==========================================
-
-print("\nLoading Haar Cascade...")
-
-detector = cv2.CascadeClassifier(CASCADE_PATH)
+detector = cv2.CascadeClassifier(str(CASCADE))
 
 if detector.empty():
-    raise FileNotFoundError(
-        f"Haar Cascade file not found or invalid: {CASCADE_PATH}"
-    )
+    raise SystemExit("ERROR: Cannot load Haar detector.")
 
-print("Haar Cascade loaded successfully!")
+if not hasattr(cv2, "face"):
+    raise SystemExit("ERROR: Install opencv-contrib-python.")
 
-
-# ==========================================
-# 3. CHECK DATASET
-# ==========================================
-
-if not os.path.exists(DATASET_DIR):
-    raise FileNotFoundError(
-        f"Dataset folder not found: {DATASET_DIR}"
-    )
-
-print("\nReading dataset...")
+recognizer = cv2.face.LBPHFaceRecognizer_create()
 
 faces = []
 labels = []
-
 label_map = {}
-current_label = 0
 
-valid_extensions = (".jpg", ".jpeg", ".png")
+folders = sorted([p for p in DATASET.iterdir() if p.is_dir()])
 
+for label, folder in enumerate(folders):
+    label_map[label] = folder.name
 
-# ==========================================
-# 4. READ IMAGES AND DETECT FACES
-# ==========================================
-
-for person_name in sorted(os.listdir(DATASET_DIR)):
-
-    person_path = os.path.join(
-        DATASET_DIR,
-        person_name
-    )
-
-    if not os.path.isdir(person_path):
-        continue
-
-    print(f"\nProcessing: {person_name}")
-
-    person_faces_found = 0
-
-    for image_name in os.listdir(person_path):
-
-        if not image_name.lower().endswith(valid_extensions):
+    for image_path in folder.iterdir():
+        if image_path.suffix.lower() not in [".jpg", ".jpeg", ".png"]:
             continue
 
-        image_path = os.path.join(
-            person_path,
-            image_name
-        )
-
-        image = cv2.imread(image_path)
+        image = cv2.imread(str(image_path))
 
         if image is None:
-            print(f"Cannot read image: {image_name}")
+            print("Cannot read:", image_path)
             continue
 
-        gray = cv2.cvtColor(
-            image,
-            cv2.COLOR_BGR2GRAY
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        detected = detector.detectMultiScale(
+            gray, scaleFactor=1.1, minNeighbors=5,
+            minSize=(50, 50)
         )
 
-        detected_faces = detector.detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(30, 30)
-        )
-
-        if len(detected_faces) == 0:
-            print(f"No face detected in: {image_name}")
+        if len(detected) == 0:
+            print("No face found:", image_path)
             continue
 
-        for (x, y, w, h) in detected_faces:
+        x, y, w, h = max(detected, key=lambda r: r[2] * r[3])
+        face = gray[y:y+h, x:x+w]
+        face = cv2.resize(face, (200, 200))
 
-            face = gray[y:y+h, x:x+w]
+        faces.append(face)
+        labels.append(label)
 
-            # Resize every face to the same dimensions
-            face = cv2.resize(
-                face,
-                (200, 200)
-            )
+        print("Added:", folder.name, image_path.name)
 
-            faces.append(face)
-
-            if person_name not in label_map:
-                label_map[person_name] = current_label
-                current_label += 1
-
-            labels.append(label_map[person_name])
-
-            person_faces_found += 1
-
-        print(
-            f"Processed: {image_name} | "
-            f"Faces detected: {len(detected_faces)}"
-        )
-
-    print(
-        f"Total faces found for {person_name}: "
-        f"{person_faces_found}"
+if len(faces) < 2:
+    raise SystemExit(
+        "Not enough face images. Add more clear images per person."
     )
 
+recognizer.train(faces, np.array(labels, dtype=np.int32))
+recognizer.save(str(MODEL))
+np.save(str(LABELS), label_map)
 
-# ==========================================
-# 5. VALIDATE TRAINING DATA
-# ==========================================
-
-if len(faces) == 0:
-    raise ValueError(
-        "No faces found. Check your dataset photographs."
-    )
-
-if len(label_map) < 2:
-    raise ValueError(
-        "At least TWO different people are required "
-        "for LBPH training."
-    )
-
-faces = np.array(faces, dtype=np.uint8)
-labels = np.array(labels, dtype=np.int32)
-
-print("\nDataset Summary")
-print("------------------------------")
-print("Total face samples:", len(faces))
-print("Total people:", len(label_map))
-print("People:", list(label_map.keys()))
-
-
-# ==========================================
-# 6. TRAIN LBPH FACE RECOGNIZER
-# ==========================================
-
-if not hasattr(cv2, "face"):
-    raise RuntimeError(
-        "OpenCV Face module is missing. "
-        "Install opencv-contrib-python."
-    )
-
-print("\nTraining LBPH Face Recognizer...")
-
-recognizer = cv2.face.LBPHFaceRecognizer_create(
-    radius=1,
-    neighbors=8,
-    grid_x=8,
-    grid_y=8
-)
-
-recognizer.train(
-    list(faces),
-    labels
-)
-
-print("Training completed successfully!")
-
-
-# ==========================================
-# 7. SAVE TRAINED MODEL
-# ==========================================
-
-recognizer.save(TRAINED_MODEL_PATH)
-
-np.save(
-    LABELS_PATH,
-    label_map
-)
-
-print("\nModel saved successfully!")
-print("------------------------------")
-print("Trained Model:", TRAINED_MODEL_PATH)
-print("Labels File:", LABELS_PATH)
-
-print("\nPerson Labels:")
-
-for name, label in label_map.items():
-    print(f"{label} : {name}")
-
-
-# ==========================================
-# 8. FINAL STATUS
-# ==========================================
-
-print("\n================================")
-print(" SMART ATTENDANCE TRAINING DONE")
-print("================================")
-
+print("\nTRAINING COMPLETED")
+print("Images:", len(faces))
+print("People:", len(label_map))
+print("Model:", MODEL)
+print("Labels:", LABELS)
